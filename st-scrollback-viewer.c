@@ -10,6 +10,7 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#include <X11/Xatom.h>
 #include <X11/Xlib.h>
 
 static volatile sig_atomic_t stopped;
@@ -30,6 +31,34 @@ xerror(Display *display, XErrorEvent *event)
 	return 0;
 }
 
+static Window
+findviewer(Display *display, Window original, pid_t pid)
+{
+	Window root, parent, *children = NULL, found = None;
+	unsigned int count, i;
+	unsigned char *value;
+	unsigned long items, remaining;
+	int format;
+	Atom actual, pidatom = XInternAtom(display, "_NET_WM_PID", False);
+
+	if (!XQueryTree(display, original, &root, &parent, &children, &count))
+		return None;
+	for (i = 0; i < count && !found; i++) {
+		value = NULL;
+		if (XGetWindowProperty(display, children[i], pidatom, 0, 1, False,
+		                       XA_CARDINAL, &actual, &format, &items, &remaining,
+		                       &value) == Success && actual == XA_CARDINAL &&
+		    format == 32 && items == 1 && value &&
+		    *(unsigned long *)value == (unsigned long)pid)
+			found = children[i];
+		if (value)
+			XFree(value);
+	}
+	if (children)
+		XFree(children);
+	return found;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -39,16 +68,23 @@ main(int argc, char **argv)
 	struct timespec delay = { .tv_nsec = 10000000 };
 	Display *display;
 	XWindowAttributes attributes;
-	Window original;
+	Window original, viewer = None;
 	XEvent activate = {0};
+	XEvent event;
 	pid_t child, result;
-	int fd, status = 1, closing = 0, ticks = 0;
+	int fd, status = 1, closing = 0, ticks = 0, startup = 0, alive = 1;
 	char *end;
 
+	if (getenv("ST_SCROLLBACK_LAUNCHER")) {
+		fprintf(stderr, "st-scrollback-viewer: recursive launcher invocation refused\n");
+		return 1;
+	}
 	if (argc != 6) {
 		fprintf(stderr, "usage: st-scrollback-viewer snapshot window geometry font st\n");
 		return 1;
 	}
+	if (setenv("ST_SCROLLBACK_LAUNCHER", "1", 1) < 0)
+		return 1;
 	/* Accept only the caller's private regular snapshot, never a symlink. */
 	if (lstat(argv[1], &snapshot) < 0 || !S_ISREG(snapshot.st_mode) ||
 	    snapshot.st_uid != getuid() || (snapshot.st_mode & 077) != 0) {
@@ -81,6 +117,8 @@ main(int argc, char **argv)
 		unlink(argv[1]);
 		return 1;
 	}
+	XSelectInput(display, original, StructureNotifyMask | SubstructureNotifyMask);
+	XFlush(display);
 	child = stopped ? -1 : fork();
 	if (child == 0) {
 		/* Do not give the viewer st the parent's lifetime pipe or any old tty. */
@@ -96,8 +134,8 @@ main(int argc, char **argv)
 		signal(SIGHUP, SIG_DFL);
 		signal(SIGINT, SIG_DFL);
 		signal(SIGCHLD, SIG_DFL);
-		execlp(argv[5], argv[5], "-n", "st-scrollback", "-t", "Scrollback (vis)",
-		       "-g", argv[3], "-f", argv[4], "-e", "vis", "--scrollback", "--", argv[1],
+		execlp(argv[5], argv[5], "--scrollback-window", "-n", "st-scrollback", "-t", "Scrollback (vis)",
+		       "-w", argv[2], "-g", argv[3], "-f", argv[4], "-e", "vis", "--scrollback", "--", argv[1],
 		       (char *)NULL);
 		perror("st-scrollback-viewer: st");
 		_exit(127);
@@ -106,6 +144,26 @@ main(int argc, char **argv)
 		perror("st-scrollback-viewer: fork");
 	} else {
 		for (;;) {
+			while (XPending(display)) {
+				XNextEvent(display, &event);
+				if (event.type == DestroyNotify && event.xdestroywindow.window == original) {
+					alive = 0;
+					stopped = 1;
+				}
+				if (event.type == ConfigureNotify && event.xconfigure.window == original && viewer)
+					XMoveResizeWindow(display, viewer, 0, 0,
+					                  event.xconfigure.width, event.xconfigure.height);
+			}
+			if (!viewer && !stopped) {
+				viewer = findviewer(display, original, child);
+				if (viewer && XGetWindowAttributes(display, original, &attributes)) {
+					XMoveResizeWindow(display, viewer, 0, 0, attributes.width, attributes.height);
+					XFlush(display);
+				} else if (++startup >= 100) {
+					fprintf(stderr, "st-scrollback-viewer: terminal did not embed; cancelling startup\n");
+					stopped = 1;
+				}
+			}
 			result = waitpid(child, &status, WNOHANG);
 			if (result == child)
 				break;
@@ -130,7 +188,7 @@ main(int argc, char **argv)
 		}
 	}
 	unlink(argv[1]);
-	if (!stopped && XGetWindowAttributes(display, original, &attributes) &&
+	if (alive && XGetWindowAttributes(display, original, &attributes) &&
 	    attributes.map_state == IsViewable) {
 		activate.xclient.type = ClientMessage;
 		activate.xclient.window = original;

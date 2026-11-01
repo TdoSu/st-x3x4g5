@@ -1632,6 +1632,10 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 	long maxfd;
 	pid_t child;
 
+	if (getenv("ST_SCROLLBACK_PARENT") || getenv("ST_SCROLLBACK_LAUNCHER")) {
+		errno = ELOOP;
+		return -1;
+	}
 	/* ttyreap owns this PID; never confuse it with a pane's foreground shell. */
 	if (scrollbackpid)
 		return 0;
@@ -1694,6 +1698,10 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 	if ((child = fork()) == 0) {
 		/* A new process/session, never the original PTY or its controlling tty. */
 		if (setsid() < 0 || dup2(life[0], STDIN_FILENO) < 0)
+			_exit(1);
+		/* Mark the entire chain before executing even the launcher. A mistaken
+		 * launcher path pointing at st must fail before it creates a window. */
+		if (setenv("ST_SCROLLBACK_PARENT", window, 1) < 0)
 			_exit(1);
 		for (fd = 3; fd < maxfd; fd++)
 			close(fd);

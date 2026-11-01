@@ -314,6 +314,42 @@ static char *usedfont = NULL;
 static double usedfontsize = 0;
 static double defaultfontsize = 0;
 static volatile sig_atomic_t viewerstop;
+static char executable[PATH_MAX];
+
+/* argv[0] can name a wrapper or a different PATH entry. Prefer the actual
+ * running executable; resolve the invocation path on systems without procfs. */
+static void
+resolveexecutable(const char *name)
+{
+	const char *path, *part, *end;
+	char candidate[PATH_MAX];
+	ssize_t len;
+	int n;
+
+	len = readlink("/proc/self/exe", executable, sizeof executable - 1);
+	if (len > 0 && (size_t)len < sizeof executable - 1) {
+		executable[len] = '\0';
+		return;
+	}
+	if (strchr(name, '/')) {
+		if (realpath(name, executable))
+			return;
+	} else if ((path = getenv("PATH"))) {
+		for (part = path;; part = end + 1) {
+			end = strchr(part, ':');
+			n = snprintf(candidate, sizeof candidate, "%.*s/%s",
+			             end ? (int)(end - part) : (int)strlen(part), part, name);
+			if (part == end || !*part)
+				n = snprintf(candidate, sizeof candidate, "./%s", name);
+			if (n > 0 && (size_t)n < sizeof candidate && access(candidate, X_OK) == 0 &&
+			    realpath(candidate, executable))
+				return;
+			if (!end)
+				break;
+		}
+	}
+	executable[0] = '\0';
+}
 
 static void
 viewerterminate(int signo)
@@ -325,8 +361,6 @@ viewerterminate(int signo)
 static void
 scrollbacktoggle(const Arg *arg)
 {
-	Window child;
-	int x, y;
 	char window[32], geometry[128];
 	FcChar8 *viewerfont;
 
@@ -337,18 +371,19 @@ scrollbacktoggle(const Arg *arg)
 		copymode_toggle(arg);
 		return;
 	}
-	if (!XTranslateCoordinates(xw.dpy, xw.win, DefaultRootWindow(xw.dpy),
-	                           0, 0, &x, &y, &child))
+	if (!executable[0]) {
+		fprintf(stderr, "st: cannot resolve its executable for scrollback\n");
+		xbell();
 		return;
+	}
 	snprintf(window, sizeof window, "%lu", xw.win);
-	/* Full window dimensions even when the snapshot comes from a split pane.
-	 * X geometry treats negative coordinates as offsets from the far edge. */
-	snprintf(geometry, sizeof geometry, "%dx%d+%d+%d",
+	/* The viewer is an X11 child covering this client window, on its own PTY. */
+	snprintf(geometry, sizeof geometry, "%dx%d+0+0",
 	         (win.w - borderpx_left - borderpx_right) / win.cw,
-	         (win.h - borderpx_top - borderpx_down) / win.ch, MAX(x, 0), MAX(y, 0));
+	         (win.h - borderpx_top - borderpx_down) / win.ch);
 	viewerfont = FcNameUnparse(dc.font.pattern);
 	if (tscrollback(scrollbacklauncher, window, geometry,
-	                viewerfont ? (char *)viewerfont : usedfont, argv0) < 0) {
+	                viewerfont ? (char *)viewerfont : usedfont, executable) < 0) {
 		perror("st: scrollback viewer");
 		xbell();
 	}
@@ -3215,6 +3250,8 @@ usage(void)
 int
 main(int argc, char *argv[])
 {
+	int scrollbackwindow = 0;
+	resolveexecutable(argv[0]);
 	xw.l = xw.t = 0;
 	xw.isfixed = False;
 	xsetcursor(cursorshape);
@@ -3228,6 +3265,11 @@ main(int argc, char *argv[])
 		LIMIT(alpha, 0.0, 1.0);
 		break;
 	case '-':
+		if (!strcmp(argv[0], "--scrollback-window")) {
+			scrollbackwindow = 1;
+			brk_ = 1;
+			break;
+		}
 		if (!strcmp(argv[0], "--disabled-da")) {
 			disableda = 1;
 			brk_ = 1;
@@ -3278,6 +3320,11 @@ main(int argc, char *argv[])
 run:
 	if (argc > 0) /* eat all remaining arguments */
 		opt_cmd = argv;
+	if (scrollbackwindow != !!getenv("ST_SCROLLBACK_PARENT") ||
+	    (getenv("ST_SCROLLBACK_LAUNCHER") && !scrollbackwindow) ||
+	    (scrollbackwindow && (!getenv("ST_SCROLLBACK_LAUNCHER") || !opt_cmd ||
+	     opt_line || !opt_embed || strcmp(opt_embed, getenv("ST_SCROLLBACK_PARENT")))))
+		die("st: invalid or recursive scrollback terminal invocation\n");
 
 	if (!opt_title)
 		opt_title = (opt_line || !opt_cmd) ? "st" : opt_cmd[0];
