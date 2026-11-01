@@ -2345,6 +2345,50 @@ tswapscreen(void)
 	tfulldirt();
 }
 
+/* Export terminal cells, never the viewport (TLINE) or shell history. */
+int
+tsnapshot(int fd)
+{
+	int y, x, wrapped, last, count = term.histlen + term.row;
+	size_t len, off;
+	ssize_t n;
+	Line line;
+	char *buf = xmalloc((size_t)term.col * UTF_SIZ + 1);
+
+	for (y = 0; y < count; y++) {
+		line = y < term.histlen
+		    ? term.hist[(term.histi - term.histlen + 1 + y + HISTSIZE) % HISTSIZE]
+		    : term.line[y - term.histlen];
+		last = term.col - 1;
+		if ((line[last].mode & ATTR_WDUMMY) && last > 0)
+			last--;
+		wrapped = line[last].mode & ATTR_WRAP;
+		len = 0;
+		for (x = 0; x < term.col; x++) {
+			if (line[x].mode & ATTR_WDUMMY)
+				continue;
+			len += utf8encode(line[x].u ? line[x].u : ' ', buf + len);
+		}
+		/* Alternate screens are not a continuation of the main screen. */
+		if (!wrapped || y == count - 1 ||
+		    (IS_SET(MODE_ALTSCREEN) && y == term.histlen - 1))
+			buf[len++] = '\n';
+		for (off = 0; off < len; off += n) {
+			n = write(fd, buf + off, len - off);
+			if (n < 0 && errno == EINTR) {
+				n = 0;
+				continue;
+			}
+			if (n <= 0) {
+				free(buf);
+				return -1;
+			}
+		}
+	}
+	free(buf);
+	return 0;
+}
+
 void
 tscrolldown(int orig, int n, int copyhist)
 {
