@@ -29,6 +29,7 @@ void xcursorclear(void);
 void xdrawcursor(int, int, Glyph, int, int, Glyph);
 void xdrawline(Line, int, int, int);
 void xdrawseparator(int);
+void xdrawappseparator(int, int, int, int);
 void xfinishdraw(void);
 void xcopypanestate(int, int);
 void xresetpanestate(int);

@@ -2636,6 +2636,8 @@ xsetenv(void)
 
 	snprintf(buf, sizeof(buf), "%lu", xw.win);
 	setenv("WINDOWID", buf, 1);
+	/* Only this patched st advertises the private native divider protocol. */
+	setenv("ST_NATIVE_SEPARATORS", "1", 1);
 }
 
 void
@@ -2750,15 +2752,34 @@ xdrawline(Line line, int x1, int y1, int x2)
 	}
 }
 
+static void
+xdrawseparatorrect(int x, int y, int width, int height, int vertical)
+{
+	int thickness = MAX(1, win.ch / 12);
+	if (vertical)
+		XftDrawRect(xw.draw, &dc.col[4], x + (width - MIN(width, thickness)) / 2,
+		            y, MIN(width, thickness), height);
+	else
+		XftDrawRect(xw.draw, &dc.col[4], x, y + (height - MIN(height, thickness)) / 2,
+		            width, MIN(height, thickness));
+}
+
+void
+xdrawappseparator(int x, int y, int length, int vertical)
+{
+	xdrawseparatorrect(borderpx_left + x * win.cw,
+	                   borderpx_top + (y + xrowoff) * win.ch,
+	                   vertical ? win.cw : length * win.cw,
+	                   vertical ? length * win.ch : win.ch, vertical);
+}
+
 void
 xdrawseparator(int row)
 {
 	int y = borderpx_top + row * win.ch;
-	int h = MAX(1, win.ch / 12);
 
 	xclear(0, y, win.w, y + win.ch);
-	XftDrawRect(xw.draw, &dc.col[4],
-	            borderpx_left, y + (win.ch - h) / 2, win.tw, h);
+	xdrawseparatorrect(borderpx_left, y, win.tw, win.ch, 0);
 }
 
 void

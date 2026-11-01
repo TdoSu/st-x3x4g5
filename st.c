@@ -136,6 +136,16 @@ typedef struct {
 	int ox, oy;
 } CopyMode;
 
+#define APP_SEPARATOR_MAX 256
+typedef struct {
+	int x, y, length, vertical;
+} AppSeparator;
+
+typedef struct {
+	AppSeparator lines[APP_SEPARATOR_MAX], pending[APP_SEPARATOR_MAX];
+	int count, pendingcount, collecting;
+} AppSeparators;
+
 /* Internal representation of the screen */
 typedef struct {
 	int row;      /* nb row */
@@ -160,6 +170,7 @@ typedef struct {
 	int *tabs;
 	Rune lastc;   /* last printed char outside of sequence, 0 if control */
 	KeyboardState kbd[2]; /* main and alternate screen keyboard modes */
+	AppSeparators separators[2]; /* application graphics, independent of text */
 } Term;
 
 /* CSI Escape sequence structs */
@@ -250,6 +261,8 @@ static void tscrolldown(int, int, int);
 static void tsetattr(const int *, int);
 static void tsetchar(Rune, const Glyph *, int, int);
 static void tsetdirt(int, int);
+static void tappseparators(char **, int);
+static void tappseparatorsclear(void);
 static void trepairwide(int);
 static void tsetscroll(int, int);
 static void tswapscreen(void);
@@ -2456,6 +2469,7 @@ treset(void)
 	uint i;
 
 	tkeyboardreset();
+	memset(term.separators, 0, sizeof term.separators);
 	term.c = (TCursor){{
 		.mode = ATTR_NULL,
 		.fg = defaultfg,
@@ -3325,6 +3339,7 @@ tsetmode(int priv, int set, const int *args, int narg)
 					break;
 				alt = IS_SET(MODE_ALTSCREEN);
 				if (alt) {
+					tappseparatorsclear();
 					tclearregion(0, 0, term.col-1,
 							term.row-1);
 				}
@@ -3689,6 +3704,59 @@ osc_color_response(int num, int index, int is_osc4)
 	}
 }
 
+static void
+tappseparatorsclear(void)
+{
+	AppSeparators *s = &term.separators[IS_SET(MODE_ALTSCREEN)];
+	if (s->count)
+		tfulldirt();
+	s->count = s->pendingcount = s->collecting = 0;
+}
+
+static void
+tappseparators(char **args, int count)
+{
+	AppSeparators *s = &term.separators[IS_SET(MODE_ALTSCREEN)];
+	long values[3];
+	char *end;
+	int i, vertical;
+	if (count == 1 && !strcmp(args[0], "clear")) {
+		tappseparatorsclear();
+	} else if (count == 1 && !strcmp(args[0], "begin")) {
+		s->collecting = 1;
+		s->pendingcount = 0;
+	} else if (count == 1 && !strcmp(args[0], "end")) {
+		/* A malformed or overflowing batch leaves the previous frame intact. */
+		if (s->collecting == 1 &&
+		    (s->count != s->pendingcount ||
+		     memcmp(s->lines, s->pending, s->count * sizeof s->lines[0]))) {
+			tfulldirt();
+			s->count = s->pendingcount;
+			memcpy(s->lines, s->pending, s->count * sizeof s->lines[0]);
+		}
+		s->collecting = 0;
+	} else if (s->collecting == 1) {
+		if (count != 5 || strcmp(args[0], "add") ||
+		    (strcmp(args[1], "h") && strcmp(args[1], "v")) ||
+		    s->pendingcount == APP_SEPARATOR_MAX)
+			goto invalid;
+		vertical = !strcmp(args[1], "v");
+		for (i = 0; i < 3; i++) {
+			errno = 0;
+			values[i] = strtol(args[i + 2], &end, 10);
+			if (errno || !*args[i + 2] || *end || values[i] < 0 || values[i] > INT_MAX)
+				goto invalid;
+		}
+		if (values[0] >= term.col || values[1] >= term.row || values[2] == 0 ||
+		    values[2] > (vertical ? term.row - values[1] : term.col - values[0]))
+			goto invalid;
+		s->pending[s->pendingcount++] = (AppSeparator){values[0], values[1], values[2], vertical};
+	}
+	return;
+invalid:
+	s->collecting = -1;
+}
+
 void
 strhandle(void)
 {
@@ -3735,11 +3803,13 @@ strhandle(void)
 				}
 			}
 			return;
-		case 777: /* private split-run command */
+		case 777: /* private st application commands */
 			if (narg > 2 && !strcmp(strescseq.args[1], "split-run"))
 				splitrunosc(strescseq.args[2]);
 			else if (narg > 1 && !strcmp(strescseq.args[1], "split-clear"))
 				splitrunoscclear();
+			else if (narg > 2 && !strcmp(strescseq.args[1], "st-separators"))
+				tappseparators(strescseq.args + 2, narg - 2);
 			return;
 		case 10: /* set dynamic VT100 text foreground color */
 		case 11: /* set dynamic VT100 text background color */
@@ -4571,6 +4641,21 @@ draw(void)
 		if (!copymode.active && term.scr == 0 &&
 		    (ocx != term.ocx || ocy != term.ocy))
 			ime = 1;
+	}
+	/* Native application dividers survive redraws and stay inside their PTY pane. */
+	for (i = 0; i < LEN(panes); i++) {
+		if (!splitisactive(i))
+			continue;
+		paneactivate(i);
+		xsetrowoff(pane->yoff);
+		AppSeparators *s = &term.separators[IS_SET(MODE_ALTSCREEN)];
+		for (int j = 0; term.scr == 0 && j < s->count; j++) {
+			AppSeparator *line = &s->lines[j];
+			if (line->x >= term.col || line->y >= term.row)
+				continue;
+			int length = MIN(line->length, line->vertical ? term.row - line->y : term.col - line->x);
+			xdrawappseparator(line->x, line->y, length, line->vertical);
+		}
 	}
 	if (splitisactive(1))
 		xdrawseparator(panes[1].yoff - 1);

@@ -227,6 +227,8 @@ void xdrawcursor(int a, int b, Glyph c, int d, int e, Glyph f)
 void xdrawline(Line a, int b, int c, int d)
 { (void)a; (void)b; (void)c; (void)d; }
 void xdrawseparator(int a) { (void)a; }
+void xdrawappseparator(int a, int b, int c, int d)
+{ (void)a; (void)b; (void)c; (void)d; }
 void xfinishdraw(void) {}
 void xcopypanestate(int a, int b) { (void)a; (void)b; }
 void xresetpanestate(int a) { (void)a; }
