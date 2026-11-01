@@ -157,6 +157,44 @@ waitviewer(Window original, int expected)
 	return None;
 }
 
+static void
+checkembedded(Window original, Window viewer)
+{
+	Window root, parent, *children = NULL;
+	unsigned int count;
+	XWindowAttributes source, target;
+	check(XQueryTree(display, viewer, &root, &parent, &children, &count), "query viewer parent");
+	if (children) XFree(children);
+	check(parent == original, "viewer is embedded in the current st, not a top-level window");
+	check(XGetWindowAttributes(display, original, &source) &&
+	      XGetWindowAttributes(display, viewer, &target), "viewer geometry");
+	check(target.x == 0 && target.y == 0 && target.width == source.width &&
+	      target.height == source.height, "viewer covers the original terminal");
+}
+
+static int
+toplevels(void)
+{
+	Window root, parent, *children = NULL;
+	unsigned int count, i;
+	unsigned char *value;
+	unsigned long items, remaining;
+	int format, result = 0;
+	Atom actual, pidatom = XInternAtom(display, "_NET_WM_PID", False);
+	check(XQueryTree(display, DefaultRootWindow(display), &root, &parent, &children, &count),
+	      "query top-level windows");
+	for (i = 0; i < count; i++) {
+		value = NULL;
+		if (XGetWindowProperty(display, children[i], pidatom, 0, 1, False, XA_CARDINAL,
+		                       &actual, &format, &items, &remaining, &value) == Success &&
+		    actual == XA_CARDINAL && format == 32 && items == 1)
+			result++;
+		if (value) XFree(value);
+	}
+	if (children) XFree(children);
+	return result;
+}
+
 static int
 snapshots(char *content, size_t size)
 {
@@ -352,7 +390,7 @@ main(int argc, char **argv)
 	Window windows[2], viewer, focus;
 	char reports[2][4096], ready[8192], content[65536], expected[128];
 	FILE *file;
-	int i, j, k, revert, status, bytes;
+	int i, j, k, revert, status, bytes, terminals;
 	if (strstr(argv[0], "xclip")) return clipboardprovider();
 	if (argc == 4 && !strcmp(argv[1], "--foreground"))
 		return foreground(argv[2], atoi(argv[3]));
@@ -371,7 +409,13 @@ main(int argc, char **argv)
 		originals[i] = fork();
 		check(originals[i] >= 0, "fork original st");
 		if (!originals[i]) {
-			execl("./st", "./st", "-f", "monospace:pixelsize=14", "-g", "48x10+40+40",
+			execl("./st",
+#ifdef __linux__
+			      "/nonexistent/wrapper-st",
+#else
+			      "./st",
+#endif
+			      "-f", "monospace:pixelsize=14", "-g", "48x10+40+40",
 			      "-e", "ksh", argv[2], argv[1], reports[i], i ? "1" : "0", (char *)NULL);
 			_exit(127);
 		}
@@ -404,17 +448,39 @@ main(int argc, char **argv)
 	}
 	/* Two independent st instances can each hold one viewer simultaneously. */
 	stage = "independent viewers";
+	terminals = toplevels();
 	for (i = 0; i < 2; i++) {
 		sendkey(windows[i], XK_q, Mod1Mask);
-		waitviewer(windows[i], 1);
+		viewer = waitviewer(windows[i], 1);
+		msleep(150);
+		checkembedded(windows[i], viewer);
+		check(toplevels() == terminals, "opening viewer creates no top-level window");
+	}
+	{
+		XWindowAttributes source, target;
+		viewer = waitviewer(windows[0], 1);
+		check(XGetWindowAttributes(display, windows[0], &source), "original geometry before resize");
+		XResizeWindow(display, windows[0], source.width + 24, source.height + 24);
+		XFlush(display);
+		for (j = 0; j < 100; j++) {
+			check(XGetWindowAttributes(display, windows[0], &source) &&
+			      XGetWindowAttributes(display, viewer, &target), "geometry after resize");
+			if (source.width == target.width && source.height == target.height) break;
+			msleep(20);
+		}
+		checkembedded(windows[0], viewer);
 	}
 	check(snapshots(NULL, 0) == 2, "two independent snapshots");
 	for (i = 0; i < 2; i++) {
 		viewer = waitviewer(windows[i], 1);
 		msleep(400);
 		for (k = 0; k < 4; k++) sendkey(windows[i], XK_q, Mod1Mask);
+		/* Alt-q delivered to the child must not start another launch chain. */
+		for (k = 0; k < 4; k++) sendkey(viewer, XK_q, Mod1Mask);
 		msleep(150);
 		waitviewer(windows[i], 1);
+		check(snapshots(NULL, 0) == 2 - i, "no nested viewer snapshots");
+		check(toplevels() == terminals, "Alt-q bursts create no top-level windows");
 		sendtext(viewer, "gg/HISTORY-0003\n0v11ly");
 		msleep(250);
 		sendtext(viewer, ":q\n");
@@ -428,6 +494,7 @@ main(int argc, char **argv)
 		for (j = 0; j < 3; j++) {
 			sendkey(windows[i], XK_q, Mod1Mask);
 			viewer = waitviewer(windows[i], 1);
+			check(toplevels() == terminals - i, "reopening viewer stays in the same window");
 			check(snapshots(content, sizeof content) == 1, "single private snapshot");
 			check(strstr(content, "HISTORY-0003") != NULL, "history exported");
 			check(strstr(content, i ? "FULLSCREEN-ACTIVE" : "CURRENT-SCREEN") != NULL, "active screen exported");
@@ -506,6 +573,6 @@ main(int argc, char **argv)
 		check(!strcmp(expected, "unchanged\n"), "ksh cwd, environment and PID preserved");
 		fclose(file);
 	}
-	puts("scrollback X11: ksh, fullscreen, copy/paste after :q, focus, isolation, repetition, failure/cancel/crash/parent-exit cleanup passed");
+	puts("scrollback X11: same-window embedding/resize, no extra top-level windows, nested Alt-q, ksh/fullscreen, copy/paste, focus and lifecycle passed");
 	return 0;
 }

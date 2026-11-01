@@ -14,7 +14,10 @@ The minimal implementation has three parts:
    skips wide-character dummy cells, joins soft wraps, and preserves cell spaces.
    An alternate screen is exported after the existing history with a hard line
    boundary. Neither screen nor history is changed.
-2. `st-scrollback-viewer` supervises a separate st running vis on a new PTY.
+2. `st-scrollback-viewer` supervises a separate st process running vis on a new
+   PTY, embedded as an X11 child of the original st through its existing `-w`
+   support. It covers the original client area without creating a top-level
+   window, and follows parent resizes.
    st owns a lifetime pipe and tracks one launcher per original window; repeated
    activation is ignored until that launcher exits. The launcher watches pipe
    EOF, cleans the snapshot, closes its viewer, and restores parent focus when
@@ -24,10 +27,10 @@ The minimal implementation has three parts:
    Editing actions are disabled at the key-action boundary; Text and editing
    engines remain unchanged. Yanks go to X11 CLIPBOARD using vis-clipboard.
 
-The viewer requests the original window's location, size, font and transient
-relationship using X11. Window managers may override placement and focus. Exact
-same-window switching would require substantially changing terminal ownership;
-V1 deliberately uses a separate window and does not touch the original PTY.
+The viewer uses the original client window as its X11 parent, with origin (0, 0),
+the same font and the current client dimensions. This uses the existing embedding
+mechanism without changing ownership of the original shell's PTY. No terminal
+multiplexer or window-manager modification is needed. The snapshot remains static.
 
 ## Commit boundaries
 
@@ -59,8 +62,9 @@ make install
 Choose the same installation prefix (configure's `--prefix` for vis, `PREFIX`
 for st), and put its `bin` directory on PATH. st's install target installs the
 small launcher alongside st. `make st` also builds the launcher. If a bare
-launcher name is absent from PATH, st tries beside its own invocation path
-(for example, `./st-scrollback-viewer` when invoked as `./st`). Explicit launcher
+launcher name is absent from PATH, st tries beside its resolved executable.
+Linux uses `/proc/self/exe`; other systems resolve the invocation path or PATH.
+Explicit launcher
 paths and existing PATH entries keep their usual precedence.
 Install `xclip` or `xsel` for X11 CLIPBOARD; the
 launcher selects X11 even when WAYLAND_DISPLAY is present. No shell configuration
@@ -85,7 +89,11 @@ If `config.h` already exists, synchronize the new configuration variables and
 Alt-q binding there, or regenerate it after preserving local customizations.
 There is only one Alt-q binding. Scrollback itself remains enabled in both modes;
 the switch selects the browsing interface. The temporary viewer ignores Alt-q
-to prevent recursive activation.
+to prevent recursive activation. The whole launch chain is marked before the
+first exec; st and the launcher also reject nested invocations. A viewer st
+requires the internal `--scrollback-window` flag and a matching embedding parent,
+so a mistaken launcher path naming st cannot open an ordinary shell window.
+Rebuild/install st and its launcher together when updating.
 
 The snapshot contains all terminal-cell spaces (including trailing blanks and
 blank rows), UTF-8 glyphs once each, and newlines at hard line boundaries. Soft
@@ -100,11 +108,11 @@ the launcher and terminates its separate process group if the launcher crashes.
 Clipboard providers intentionally retain selection ownership after vis exits,
 until another application replaces the selection.
 
-Window placement, transient hints and focus use standard X11/EWMH requests.
-The viewer requests the original dimensions and font. Negative desktop positions
-are clamped to zero because st's geometry syntax interprets minus as an offset
-from the far screen edge. A window manager can override placement/focus; there
-is no dwm dependency. V1 is a separate window with a static snapshot.
+The original top-level window stays in place. The launcher verifies that its
+child terminal actually embeds in that window and cancels startup if it does not.
+It follows parent ConfigureNotify events and restores input focus on exit using
+standard X11/EWMH requests. Focus may still be constrained by the desktop, but
+viewer placement does not depend on a window manager. There is no dwm dependency.
 
 ## Verification
 
@@ -112,6 +120,7 @@ From this checkout:
 
 ```
 sh tests/scrollback-snapshot.sh
+sh tests/scrollback-recursion.sh
 sh tests/wide-overwrite.sh
 sh tests/split-state.sh
 sh tests/scrollback-x11.sh
@@ -120,17 +129,24 @@ sh tests/scrollback-x11.sh
 The snapshot test also verifies automatic temporary-file creation/cleanup,
 launcher lookup beside st when PATH misses it, PATH precedence, and explicit
 launcher paths. The X11 script does not add the st checkout to PATH, exercising
-the sibling lookup with the real viewer.
+the sibling lookup with the real viewer. The recursion script rejects mistaken
+launcher/terminal invocations before connecting to X11 or creating any window.
 
 The X11 test requires a working DISPLAY, ksh, a C compiler and X11 headers, and a
 built sibling vis checkout (override `VIS_DIR` if necessary). It runs two st
 instances, one with an alternate-screen foreground program, and checks history,
+same-window embedding, parent resizing, an unchanged top-level window count,
+Alt-q bursts in both parent and child, resolution of a deliberately wrong argv[0],
 current content, search/Visual copying, paste from another visible X11 client
 after `:q`, duplicate suppression, focus, unchanged shell PID/cwd/environment,
 unchanged foreground input, repeated activation, restrictive permissions, and
 cleanup on failure/cancellation/launcher crash/original exit. Its test-only
 xclip replacement serves actual X11 selections and avoids requiring an installed
 clipboard provider just to run the test.
+
+The embedded-viewer scenarios were also run successfully on a temporary nested
+rootful Xwayland server, independently of the main desktop's window placement
+and focus rules.
 
 From the vis checkout, `python3 test/scrollback.py` checks the native PTY input
 path, dedicated configuration, navigation/search/yanking, rejected editing,

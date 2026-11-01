@@ -1,4 +1,5 @@
 #include <locale.h>
+#include <errno.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -91,6 +92,14 @@ test_launcher(void)
 		goto fail;
 	tnew(24, 2);
 	feed("launcher-snapshot");
+	if (setenv("ST_SCROLLBACK_PARENT", "1", 1) < 0 ||
+	    tscrollback("st-launcher-fixture", "1", "24x2", "monospace", terminal) != -1 || errno != ELOOP)
+		goto fail;
+	unsetenv("ST_SCROLLBACK_PARENT");
+	if (setenv("ST_SCROLLBACK_LAUNCHER", "1", 1) < 0 ||
+	    tscrollback("st-launcher-fixture", "1", "24x2", "monospace", terminal) != -1 || errno != ELOOP)
+		goto fail;
+	unsetenv("ST_SCROLLBACK_LAUNCHER");
 	for (scenario = 0; scenario < 3; scenario++) {
 		/* Missing PATH entry, PATH precedence, then an explicit helper path. */
 		if (setenv("PATH", scenario == 1 ? bindir : "/nonexistent", 1) < 0 ||
