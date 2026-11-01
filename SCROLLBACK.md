@@ -107,7 +107,7 @@ sh tests/split-state.sh
 sh tests/scrollback-x11.sh
 ```
 
-The X11 test requires a working DISPLAY, ksh, Python-free C build tools, and a
+The X11 test requires a working DISPLAY, ksh, a C compiler and X11 headers, and a
 built sibling vis checkout (override `VIS_DIR` if necessary). It runs two st
 instances, one with an alternate-screen foreground program, and checks history,
 current content, search/Visual copying, paste from another visible X11 client
@@ -125,3 +125,12 @@ For manual acceptance, launch st with ksh, produce more than one screen of outpu
 press Alt-q, search for old output, select text with `v` and yank with `y`, then
 `:q` and paste into another X11 application. Repeat with a full-screen program.
 Use `scrollbackvis = 0` and rebuild to verify the original copy interface.
+With that build, set `SCROLLBACK_TEST_LEGACY=1` when running the X11 script to
+check the old copy selection/motions and verify they do not reach the PTY.
+
+Validated in the implementation environment: both repository builds, snapshot
+tests, existing wide-character/split-state tests, vis's PTY viewer tests, its core
+suite and 65 editing cases, the X11 scenarios above, and a separate build with
+`scrollbackvis = 0`. The sam suite was skipped because sam was unavailable.
+OpenBSD portability follows the existing build conventions but was not executed
+on an OpenBSD host.

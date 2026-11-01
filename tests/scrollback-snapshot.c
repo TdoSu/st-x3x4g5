@@ -59,6 +59,9 @@ main(void)
 	if (!setlocale(LC_CTYPE, "") || wcwidth(0x4f60) != 2)
 		return 2;
 	tnew(6, 2);
+	feed("ab你好Z");
+	expect("ab你好Z     \n");
+	tnew(6, 2);
 	feed("  你好\r\nx");
 	expect("  你好\nx     \n");
 	/* Wide glyph at a wrap boundary, then history-to-screen continuation. */
