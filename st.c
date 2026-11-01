@@ -326,6 +326,7 @@ static pid_t scrollbackpid;
 static pid_t scrollbackowner;
 static int scrollbacklife = -1;
 static char scrollbackpath[PATH_MAX];
+static char scrollbackstyles[PATH_MAX];
 static char *splitshell;
 int disableda = 0;
 
@@ -1616,7 +1617,10 @@ scrollbackcleanup(void)
 	scrollbacklife = -1;
 	if (scrollbackpath[0])
 		unlink(scrollbackpath);
+	if (scrollbackstyles[0])
+		unlink(scrollbackstyles);
 	scrollbackpath[0] = '\0';
+	scrollbackstyles[0] = '\0';
 	scrollbackpid = 0;
 }
 
@@ -1628,7 +1632,7 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 	const char *tmp = getenv("TMPDIR");
 	const char *slash;
 	char sibling[PATH_MAX] = "";
-	int fd, life[2], n, saved;
+	int fd, styles, life[2], n, saved;
 	long maxfd;
 	pid_t child;
 
@@ -1665,7 +1669,32 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 		scrollbackpath[0] = '\0';
 		return -1;
 	}
-	if (tsnapshot(fd) < 0 || fchmod(fd, S_IRUSR) < 0) {
+	n = snprintf(scrollbackstyles, sizeof scrollbackstyles, "%s.styles", scrollbackpath);
+	if (n < 0 || (size_t)n >= sizeof scrollbackstyles) {
+		scrollbackstyles[0] = '\0';
+		close(fd);
+		scrollbackcleanup();
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	styles = open(scrollbackstyles, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR);
+	if (styles < 0) {
+		saved = errno;
+		scrollbackstyles[0] = '\0';
+		close(fd);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	if (tsnapshotstyled(fd, styles) < 0 || fchmod(fd, S_IRUSR) < 0 || fchmod(styles, S_IRUSR) < 0) {
+		saved = errno;
+		close(fd);
+		close(styles);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	if (close(styles) < 0) {
 		saved = errno;
 		close(fd);
 		scrollbackcleanup();
@@ -2484,16 +2513,67 @@ tswapscreen(void)
 	tfulldirt();
 }
 
-/* Export terminal cells, never the viewport (TLINE) or shell history. */
-int
-tsnapshot(int fd)
+static uint32_t
+snapshotrgb(uint32_t color)
 {
-	int y, x, wrapped, last, count = term.histlen + term.row;
-	size_t len, off;
+	unsigned char r = 0, g = 0, b = 0;
+	if (IS_TRUECOL(color))
+		return color & 0xffffff;
+	xgetcolor(color, &r, &g, &b);
+	return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
+}
+
+static void
+snapshotstyle(char *buf, size_t size, Glyph glyph)
+{
+	uint32_t fg = glyph.fg, bg = glyph.bg, swap;
+	if ((glyph.mode & ATTR_BOLD_FAINT) == ATTR_BOLD && fg < 8)
+		fg += 8;
+	fg = snapshotrgb(fg);
+	bg = snapshotrgb(bg);
+	if ((glyph.mode & ATTR_BOLD_FAINT) == ATTR_FAINT)
+		fg = ((fg & 0xfefefe) >> 1);
+	if (glyph.mode & ATTR_REVERSE) {
+		swap = fg;
+		fg = bg;
+		bg = swap;
+	}
+	if (glyph.mode & ATTR_INVISIBLE)
+		fg = bg;
+	snprintf(buf, size, "fore:#%06x,back:#%06x%s%s%s", fg, bg,
+	         glyph.mode & ATTR_BOLD ? ",bold" : "",
+	         glyph.mode & ATTR_ITALIC ? ",italics" : "",
+	         glyph.mode & ATTR_UNDERLINE ? ",underlined" : "");
+}
+
+/* Byte ranges carry display styles separately from selectable UTF-8 text. */
+static int
+snapshotexport(int fd, FILE *styles)
+{
+	int y, x, wrapped, last, rows = term.row, count;
+	size_t len, off, offset = 0, start = 0, screen = 0, cursor = 0;
 	ssize_t n;
 	Line line;
+	char style[128], previous[128] = "";
 	char *buf = xmalloc((size_t)term.col * UTF_SIZ + 1);
 
+	/* Empty cells below the cursor are unused screen space, not output lines. */
+	while (rows > term.c.y + 1) {
+		for (x = 0; x < term.col; x++) {
+			Glyph cell = term.line[rows - 1][x];
+			if ((cell.u && cell.u != ' ') || cell.bg != defaultbg ||
+			    (cell.mode & (ATTR_REVERSE | ATTR_UNDERLINE | ATTR_STRUCK)))
+				break;
+		}
+		if (x < term.col)
+			break;
+		rows--;
+	}
+	count = term.histlen + rows;
+	if (styles) {
+		snapshotstyle(style, sizeof style, (Glyph){.fg = defaultfg, .bg = defaultbg});
+		fprintf(styles, "ST-SCROLLBACK\t1\nD\t%s\n", style);
+	}
 	for (y = 0; y < count; y++) {
 		line = y < term.histlen
 		    ? term.hist[(term.histi - term.histlen + 1 + y + HISTSIZE) % HISTSIZE]
@@ -2503,9 +2583,23 @@ tsnapshot(int fd)
 			last--;
 		wrapped = line[last].mode & ATTR_WRAP;
 		len = 0;
+		if (y == term.histlen)
+			screen = offset;
 		for (x = 0; x < term.col; x++) {
 			if (line[x].mode & ATTR_WDUMMY)
 				continue;
+			if (y == term.histlen + term.c.y &&
+			    (x == term.c.x || (x + 1 == term.c.x && (line[x].mode & ATTR_WIDE))))
+				cursor = offset + len;
+			if (styles) {
+				snapshotstyle(style, sizeof style, line[x]);
+				if (strcmp(style, previous)) {
+					if (previous[0])
+						fprintf(styles, "R\t%zu\t%zu\t%s\n", start, offset + len, previous);
+					strcpy(previous, style);
+					start = offset + len;
+				}
+			}
 			len += utf8encode(line[x].u ? line[x].u : ' ', buf + len);
 		}
 		/* Alternate screens are not a continuation of the main screen. */
@@ -2523,9 +2617,40 @@ tsnapshot(int fd)
 				return -1;
 			}
 		}
+		offset += len;
+	}
+	if (styles) {
+		if (previous[0])
+			fprintf(styles, "R\t%zu\t%zu\t%s\n", start, offset, previous);
+		fprintf(styles, "V\t%zu\t%zu\t%d\t%d\n", screen, cursor, term.col, rows);
 	}
 	free(buf);
 	return 0;
+}
+
+int
+tsnapshot(int fd)
+{
+	return snapshotexport(fd, NULL);
+}
+
+int
+tsnapshotstyled(int fd, int stylefd)
+{
+	FILE *styles;
+	int copy, result;
+	if ((copy = dup(stylefd)) < 0)
+		return -1;
+	if (!(styles = fdopen(copy, "w"))) {
+		close(copy);
+		return -1;
+	}
+	result = snapshotexport(fd, styles);
+	if (fflush(styles) != 0 || ferror(styles))
+		result = -1;
+	if (fclose(styles) != 0)
+		result = -1;
+	return result;
 }
 
 void

@@ -1,6 +1,7 @@
 /* See LICENSE for license details. A supervisor, never a PTY owner. */
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -14,6 +15,16 @@
 #include <X11/Xlib.h>
 
 static volatile sig_atomic_t stopped;
+
+static void
+removesnapshot(const char *snapshot)
+{
+	char styles[PATH_MAX];
+	int n = snprintf(styles, sizeof styles, "%s.styles", snapshot);
+	if (n > 0 && (size_t)n < sizeof styles)
+		unlink(styles);
+	unlink(snapshot);
+}
 
 static void
 onsignal(int signo)
@@ -93,7 +104,7 @@ main(int argc, char **argv)
 	}
 	original = strtoul(argv[2], &end, 0);
 	if (!original || *end) {
-		unlink(argv[1]);
+		removesnapshot(argv[1]);
 		return 1;
 	}
 	sa.sa_handler = onsignal;
@@ -101,20 +112,20 @@ main(int argc, char **argv)
 	if (sigaction(SIGTERM, &sa, NULL) < 0 || sigaction(SIGHUP, &sa, NULL) < 0 ||
 	    sigaction(SIGINT, &sa, NULL) < 0 || sigaction(SIGCHLD, &sa, NULL) < 0) {
 		perror("st-scrollback-viewer: sigaction");
-		unlink(argv[1]);
+		removesnapshot(argv[1]);
 		return 1;
 	}
 	XSetErrorHandler(xerror);
 	if (!(display = XOpenDisplay(NULL))) {
 		fprintf(stderr, "st-scrollback-viewer: cannot open display\n");
-		unlink(argv[1]);
+		removesnapshot(argv[1]);
 		return 1;
 	}
 	if (!XGetWindowAttributes(display, original, &attributes) ||
 	    fcntl(ConnectionNumber(display), F_SETFD, FD_CLOEXEC) < 0 ||
 	    fcntl(STDIN_FILENO, F_SETFD, FD_CLOEXEC) < 0) {
 		XCloseDisplay(display);
-		unlink(argv[1]);
+		removesnapshot(argv[1]);
 		return 1;
 	}
 	XSelectInput(display, original, StructureNotifyMask | SubstructureNotifyMask);
@@ -187,7 +198,7 @@ main(int argc, char **argv)
 				nanosleep(&delay, NULL);
 		}
 	}
-	unlink(argv[1]);
+	removesnapshot(argv[1]);
 	if (alive && XGetWindowAttributes(display, original, &attributes) &&
 	    attributes.map_state == IsViewable) {
 		activate.xclient.type = ClientMessage;

@@ -148,6 +148,35 @@ fail:
 	exit(1);
 }
 
+static void
+test_styles(void)
+{
+	FILE *text = tmpfile(), *styles = tmpfile();
+	char content[256], metadata[2048];
+	size_t size;
+	if (!text || !styles) exit(1);
+	tnew(8, 5);
+	feed("\033[38;2;255;0;0mA你\033[0m B");
+	if (tsnapshotstyled(fileno(text), fileno(styles)) < 0) exit(1);
+	rewind(text);
+	size = fread(content, 1, sizeof content - 1, text);
+	content[size] = 0;
+	rewind(styles);
+	size = fread(metadata, 1, sizeof metadata - 1, styles);
+	metadata[size] = 0;
+	if (strcmp(content, "A你 B   \n") ||
+	    !strstr(metadata, "R\t0\t4\tfore:#ff0000,back:#000000\n") ||
+	    !strstr(metadata, "V\t0\t6\t8\t1\n")) {
+		fprintf(stderr, "FAIL: styled UTF-8 snapshot or cursor/unused-row export\n%s\n%s", content, metadata);
+		exit(1);
+	}
+	fclose(text);
+	fclose(styles);
+	feed("\r\n\r\n");
+	expect("A你 B   \n        \n        \n");
+	puts("scrollback styles: RGB/UTF-8 byte ranges, cursor, unused rows and intentional blank lines ok");
+}
+
 int
 main(void)
 {
@@ -156,6 +185,7 @@ main(void)
 	if (!setlocale(LC_CTYPE, "") || wcwidth(0x4f60) != 2)
 		return 2;
 	test_launcher();
+	test_styles();
 	tnew(6, 2);
 	feed("ab你好Z");
 	expect("ab你好Z     \n");
@@ -169,7 +199,7 @@ main(void)
 	expect("  你好\nxyz0123456789     \n");
 	expect("  你好\nxyz0123456789     \n");
 	feed("\033[?1049h\033[HALT");
-	expect("  你好\nxyz012\nALT   \n      \n");
+	expect("  你好\nxyz012\nALT   \n");
 	feed("\033[?1049l");
 	expect("  你好\nxyz0123456789     \n");
 	tnew(6, 2);

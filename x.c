@@ -363,6 +363,7 @@ scrollbacktoggle(const Arg *arg)
 {
 	char window[32], geometry[128];
 	FcChar8 *viewerfont;
+	FcPattern *pattern;
 
 	/* Do not recursively open a viewer from its own temporary terminal. */
 	if (getenv("ST_SCROLLBACK_PARENT"))
@@ -381,7 +382,17 @@ scrollbacktoggle(const Arg *arg)
 	snprintf(geometry, sizeof geometry, "%dx%d+0+0",
 	         (win.w - borderpx_left - borderpx_right) / win.cw,
 	         (win.h - borderpx_top - borderpx_down) / win.ch);
-	viewerfont = FcNameUnparse(dc.font.pattern);
+	/* Pass the user's request plus the current pixel size, not a substituted
+	 * Fontconfig pattern with machine-specific fallback families/metrics. */
+	pattern = usedfont[0] == '-' ? XftXlfdParse(usedfont, False, False)
+	                            : FcNameParse((const FcChar8 *)usedfont);
+	if (!pattern)
+		return;
+	FcPatternDel(pattern, FC_SIZE);
+	FcPatternDel(pattern, FC_PIXEL_SIZE);
+	FcPatternAddDouble(pattern, FC_PIXEL_SIZE, usedfontsize);
+	viewerfont = FcNameUnparse(pattern);
+	FcPatternDestroy(pattern);
 	if (tscrollback(scrollbacklauncher, window, geometry,
 	                viewerfont ? (char *)viewerfont : usedfont, executable) < 0) {
 		perror("st: scrollback viewer");
