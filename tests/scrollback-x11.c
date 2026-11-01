@@ -1,5 +1,6 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #include <X11/keysym.h>
 
 #include <dirent.h>
@@ -163,6 +164,8 @@ checkembedded(Window original, Window viewer)
 	Window root, parent, *children = NULL;
 	unsigned int count;
 	XWindowAttributes source, target;
+	XSizeHints original_hints, viewer_hints;
+	long supplied;
 	check(XQueryTree(display, viewer, &root, &parent, &children, &count), "query viewer parent");
 	if (children) XFree(children);
 	check(parent == original, "viewer is embedded in the current st, not a top-level window");
@@ -170,6 +173,101 @@ checkembedded(Window original, Window viewer)
 	      XGetWindowAttributes(display, viewer, &target), "viewer geometry");
 	check(target.x == 0 && target.y == 0 && target.width == source.width &&
 	      target.height == source.height, "viewer covers the original terminal");
+	check(XGetWMNormalHints(display, original, &original_hints, &supplied) &&
+	      XGetWMNormalHints(display, viewer, &viewer_hints, &supplied), "terminal font metrics");
+	if (original_hints.min_width - original_hints.base_width != viewer_hints.min_width - viewer_hints.base_width ||
+	    original_hints.min_height - original_hints.base_height != viewer_hints.min_height - viewer_hints.base_height)
+		fprintf(stderr, "parent cell=%dx%d, viewer cell=%dx%d\n",
+		        original_hints.min_width - original_hints.base_width,
+		        original_hints.min_height - original_hints.base_height,
+		        viewer_hints.min_width - viewer_hints.base_width,
+		        viewer_hints.min_height - viewer_hints.base_height);
+	check(original_hints.min_width - original_hints.base_width == viewer_hints.min_width - viewer_hints.base_width &&
+	      original_hints.min_height - original_hints.base_height == viewer_hints.min_height - viewer_hints.base_height,
+	      "viewer inherits the original font cell dimensions");
+}
+
+static void
+capture(Window viewer)
+{
+	const char *path = getenv("ST_TEST_CAPTURE");
+	XWindowAttributes attr;
+	XImage *image;
+	FILE *file;
+	int x, y;
+	unsigned long pixel;
+	if (!path) return;
+	check(XGetWindowAttributes(display, viewer, &attr), "capture geometry");
+	image = XGetImage(display, viewer, 0, 0, attr.width, attr.height, AllPlanes, ZPixmap);
+	check(image != NULL && (file = fopen(path, "wb")) != NULL, "capture screenshot");
+	fprintf(file, "P6\n%d %d\n255\n", attr.width, attr.height);
+	for (y = 0; y < attr.height; y++)
+		for (x = 0; x < attr.width; x++) {
+			pixel = XGetPixel(image, x, y);
+			fputc((pixel >> 16) & 255, file);
+			fputc((pixel >> 8) & 255, file);
+			fputc(pixel & 255, file);
+		}
+	fclose(file);
+	XDestroyImage(image);
+}
+
+static XImage *
+screenimage(Window window)
+{
+	XWindowAttributes attrs;
+	check(XGetWindowAttributes(display, window, &attrs), "screen image geometry");
+	return XGetImage(display, window, 0, 0, attrs.width, attrs.height, AllPlanes, ZPixmap);
+}
+
+static void
+checkappearance(XImage *source, Window original, Window viewer, int alternate)
+{
+	XImage *target = screenimage(viewer);
+	XSizeHints hints;
+	long supplied;
+	int x, y, channel, first, last, different = 0, delta;
+	unsigned long a, b;
+	check(source && target && source->width == target->width && source->height == target->height,
+	      "snapshot image dimensions");
+	check(XGetWMNormalHints(display, original, &hints, &supplied), "snapshot cell size");
+	first = hints.base_height + (alternate ? hints.min_height - hints.base_height : 0);
+	last = source->height - (hints.min_height - hints.base_height);
+	for (y = first; y < last; y++) {
+		for (x = hints.base_width / 2; x < source->width - hints.base_width / 2; x++) {
+			a = XGetPixel(source, x, y);
+			b = XGetPixel(target, x, y);
+			for (channel = 0; channel < 24; channel += 8) {
+				delta = (int)((a >> channel) & 255) - (int)((b >> channel) & 255);
+				if (delta < -3 || delta > 3) { different++; break; }
+			}
+		}
+	}
+	if (different) fprintf(stderr, "snapshot differs at %d pixels (font/row/colour regression)\n", different);
+	check(different == 0, "viewer matches original glyph spacing, rows and RGB colours");
+	XDestroyImage(source);
+	XDestroyImage(target);
+}
+
+static void
+checkselection(Window viewer)
+{
+	XImage *image;
+	XSizeHints hints;
+	long supplied;
+	unsigned long selected, ordinary;
+	int left, top, cellwidth;
+	check(XGetWMNormalHints(display, viewer, &hints, &supplied), "selection font metrics");
+	cellwidth = hints.min_width - hints.base_width;
+	left = hints.base_width / 2;
+	top = hints.base_height + 3 * (hints.min_height - hints.base_height);
+	image = screenimage(viewer);
+	check(image != NULL, "selection pixels");
+	/* Compare background pixels inside and outside a Visual selection. */
+	selected = XGetPixel(image, left + cellwidth / 2, top);
+	ordinary = XGetPixel(image, left + cellwidth * 20, top);
+	check((selected & 0xffffff) != (ordinary & 0xffffff), "Visual selection contrasts with snapshot colors");
+	XDestroyImage(image);
 }
 
 static int
@@ -208,6 +306,13 @@ snapshots(char *content, size_t size)
 	check(dir != NULL, "open scratch");
 	while ((entry = readdir(dir))) {
 		if (strncmp(entry->d_name, "st-scrollback.", 14)) continue;
+		if (strlen(entry->d_name) >= 7 && !strcmp(entry->d_name + strlen(entry->d_name) - 7, ".styles")) {
+			snprintf(path, sizeof path, "%s/%s", scratch, entry->d_name);
+			check(stat(path, &st) == 0 && (st.st_mode & 0777) == 0400, "private read-only styles");
+			path[strlen(path) - 7] = '\0';
+			check(access(path, F_OK) == 0, "no orphan snapshot styles");
+			continue;
+		}
 		count++;
 		snprintf(path, sizeof path, "%s/%s", scratch, entry->d_name);
 		check(stat(path, &st) == 0 && (st.st_mode & 0777) == 0400, "private read-only snapshot");
@@ -391,6 +496,7 @@ main(int argc, char **argv)
 	char reports[2][4096], ready[8192], content[65536], expected[128];
 	FILE *file;
 	int i, j, k, revert, status, bytes, terminals;
+	XImage *source;
 	if (strstr(argv[0], "xclip")) return clipboardprovider();
 	if (argc == 4 && !strcmp(argv[1], "--foreground"))
 		return foreground(argv[2], atoi(argv[3]));
@@ -403,6 +509,11 @@ main(int argc, char **argv)
 	requester = XCreateSimpleWindow(display, DefaultRootWindow(display), 0, 0, 200, 40, 0, 0, 0);
 	XStoreName(display, requester, "Scrollback clipboard acceptance target");
 	XMapWindow(display, requester);
+	if (getenv("ST_TEST_ISOLATED")) {
+		XSync(display, False);
+		check(XGrabKeyboard(display, requester, False, GrabModeAsync, GrabModeAsync,
+		                    CurrentTime) == GrabSuccess, "isolate physical keyboard input");
+	}
 	atexit(cleanup);
 	for (i = 0; i < 2; i++) {
 		snprintf(reports[i], sizeof reports[i], "%s/report%d", scratch, i);
@@ -415,7 +526,8 @@ main(int argc, char **argv)
 #else
 			      "./st",
 #endif
-			      "-f", "monospace:pixelsize=14", "-g", "48x10+40+40",
+			      "-f", getenv("ST_TEST_FONT") ? getenv("ST_TEST_FONT") : "monospace:pixelsize=14",
+			      "-g", "48x10+40+40",
 			      "-e", "ksh", argv[2], argv[1], reports[i], i ? "1" : "0", (char *)NULL);
 			_exit(127);
 		}
@@ -450,10 +562,15 @@ main(int argc, char **argv)
 	stage = "independent viewers";
 	terminals = toplevels();
 	for (i = 0; i < 2; i++) {
+		XRaiseWindow(display, windows[i]);
+		XSync(display, False);
+		msleep(100);
+		source = screenimage(windows[i]);
 		sendkey(windows[i], XK_q, Mod1Mask);
 		viewer = waitviewer(windows[i], 1);
-		msleep(150);
+		msleep(400);
 		checkembedded(windows[i], viewer);
+		checkappearance(source, windows[i], viewer, i);
 		check(toplevels() == terminals, "opening viewer creates no top-level window");
 	}
 	{
@@ -474,6 +591,10 @@ main(int argc, char **argv)
 	for (i = 0; i < 2; i++) {
 		viewer = waitviewer(windows[i], 1);
 		msleep(400);
+		if (i == 0 && getenv("ST_TEST_CAPTURE")) {
+			sendtext(viewer, "gg");
+			capture(viewer);
+		}
 		for (k = 0; k < 4; k++) sendkey(windows[i], XK_q, Mod1Mask);
 		/* Alt-q delivered to the child must not start another launch chain. */
 		for (k = 0; k < 4; k++) sendkey(viewer, XK_q, Mod1Mask);
@@ -481,7 +602,9 @@ main(int argc, char **argv)
 		waitviewer(windows[i], 1);
 		check(snapshots(NULL, 0) == 2 - i, "no nested viewer snapshots");
 		check(toplevels() == terminals, "Alt-q bursts create no top-level windows");
-		sendtext(viewer, "gg/HISTORY-0003\n0v11ly");
+		sendtext(viewer, "gg/HISTORY-0003\n0v11l");
+		checkselection(viewer);
+		sendtext(viewer, "y");
 		msleep(250);
 		sendtext(viewer, ":q\n");
 		waitviewer(windows[i], 0);
@@ -565,7 +688,9 @@ main(int argc, char **argv)
 		check(snapshots(NULL, 0) == 0, "original exit cleanup");
 		expectclipboard("HISTORY-0003");
 		file = fopen(reports[i], "r");
-		check(file && fscanf(file, "%d", &bytes) == 1 && bytes == 0, "Alt-q never reached foreground PTY");
+		check(file && fscanf(file, "%d", &bytes) == 1, "foreground input report");
+		if (bytes != 0) fprintf(stderr, "unexpected foreground bytes: %d\n", bytes);
+		check(bytes == 0, "Alt-q never reached foreground PTY");
 		fclose(file);
 		snprintf(ready, sizeof ready, "%s.state", reports[i]);
 		file = fopen(ready, "r");

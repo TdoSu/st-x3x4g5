@@ -13,7 +13,8 @@ The minimal implementation has three parts:
    screen, to a private temporary file. Export ignores the current scroll offset,
    skips wide-character dummy cells, joins soft wraps, and preserves cell spaces.
    An alternate screen is exported after the existing history with a hard line
-   boundary. Neither screen nor history is changed.
+   boundary. A private `.styles` companion carries RGB/attribute byte ranges and
+   the original screen/cursor byte offsets. Neither screen nor history is changed.
 2. `st-scrollback-viewer` supervises a separate st process running vis on a new
    PTY, embedded as an X11 child of the original st through its existing `-w`
    support. It covers the original client area without creating a top-level
@@ -26,6 +27,13 @@ The minimal implementation has three parts:
    navigation/search/selection/yank actions, and a restricted command prompt.
    Editing actions are disabled at the key-action boundary; Text and editing
    engines remain unchanged. Yanks go to X11 CLIPBOARD using vis-clipboard.
+
+The viewer disables syntax guessing, EOF/whitespace replacement characters and
+its own status bar. Full-width terminal rows consume one display row: their
+newline has no extra display column. This avoids word-wrapping the right side of
+a captured screen and adding blank rows. The original font request is passed
+with the current pixel size, including zoom, rather than serializing Fontconfig's
+expanded fallback pattern.
 
 The viewer uses the original client window as its X11 parent, with origin (0, 0),
 the same font and the current client dimensions. This uses the existing embedding
@@ -95,13 +103,29 @@ requires the internal `--scrollback-window` flag and a matching embedding parent
 so a mistaken launcher path naming st cannot open an ordinary shell window.
 Rebuild/install st and its launcher together when updating.
 
-The snapshot contains all terminal-cell spaces (including trailing blanks and
-blank rows), UTF-8 glyphs once each, and newlines at hard line boundaries. Soft
+The snapshot contains terminal-cell spaces (including trailing blanks and
+intentional blank rows), UTF-8 glyphs once each, and newlines at hard line boundaries. Soft
 wrap markers join physical rows, including history-to-main-screen boundaries.
 History and an active alternate screen have a hard boundary. Terminal control
 sequences and text already discarded from the bounded ring cannot be recovered.
+Only unused, default-background rows below the cursor are omitted; colored blank
+rows and blank lines up to the cursor remain. Startup restores the captured screen
+and cursor position rather than jumping into a tail of empty padding.
 
-The snapshot is created with mkstemp, becomes mode 0400 after writing, and is
+`<snapshot>.styles` is a declarative UTF-8 companion, never Lua or shell code.
+Its first line is `ST-SCROLLBACK<TAB>1`. `D` records the default display style,
+`R` records start/end UTF-8 byte offsets plus a style, and `V` records the screen
+offset, cursor offset, columns and retained rows. Styles contain resolved
+`fore:#RRGGBB,back:#RRGGBB` values and supported bold/italic/underline attributes.
+Faint, reverse and invisible colors are resolved at capture time. vis applies
+these ranges through its Lua highlighting API; selection uses reverse video on
+top. Copying and searching use the unmodified text file, without ANSI sequences.
+The embedded terminal owns its palette, so RGB initialization does not alter the
+original terminal's colors. A snapshot without a companion still opens as plain
+read-only text.
+
+The snapshot is created with mkstemp; its companion uses exclusive creation.
+Both become mode 0400 after writing, and are
 removed on normal exit, cancellation and startup failure. The launcher's lifetime
 pipe closes when the original st exits; it terminates the viewer. st also reaps
 the launcher and terminates its separate process group if the launcher crashes.
@@ -143,6 +167,15 @@ unchanged foreground input, repeated activation, restrictive permissions, and
 cleanup on failure/cancellation/launcher crash/original exit. Its test-only
 xclip replacement serves actual X11 selections and avoids requiring an installed
 clipboard provider just to run the test.
+
+Display checks compare original and viewer cell metrics and pixels, excluding
+cursor cells and allowing RGB rounding of at most 3/255. Fixtures cover full-width
+padded rows, RGB text, italic text and underlined CJK glyphs. They also check that
+Visual selection contrasts with those colors, that yanks are plain UTF-8, and
+that companion files are private and cleaned up. Use `ST_TEST_FONT` to override
+the test font; 30-pixel Maple Mono was verified. `ST_TEST_CAPTURE` can save a PPM
+capture for visual inspection. On a dedicated nested X11 server,
+`ST_TEST_ISOLATED=1` directs physical keyboard input away from the test's raw PTYs.
 
 The embedded-viewer scenarios were also run successfully on a temporary nested
 rootful Xwayland server, independently of the main desktop's window placement

@@ -23,10 +23,10 @@ export SCROLLBACK_TEST_ENV=unchanged
 before="$$:$PWD:$SCROLLBACK_TEST_ENV"
 i=0
 while [ "$i" -lt 60 ]; do
-	printf 'HISTORY-%04d\n' "$i"
+	printf '\033[38;2;243;139;168mHISTORY-%04d\033[0m\n' "$i"
 	i=$((i + 1))
 done
-printf '  CURRENT-SCREEN 你好\n'
+printf '  \033[3;38;2;137;180;250mCURRENT-SCREEN\033[0m \033[4;38;2;166;227;161m你好\033[0m\n'
 "$1" --foreground "$2" "$3" || exit 1
 [ "$before" = "$$:$PWD:$SCROLLBACK_TEST_ENV" ] || exit 1
 printf 'unchanged\n' > "$2.state"
