@@ -31,7 +31,7 @@ clean:
 dist: clean
 	mkdir -p st-$(VERSION)
 	cp -R FAQ LEGACY TODO LICENSE Makefile README config.mk\
-		config.def.h build.mk st.info st.1 arg.h st.h win.h boxdraw_data.h SCROLLBACK.md st-scrollback-viewer.c $(SRC)\
+		config.def.h build.mk st.info st.1 arg.h st.h win.h boxdraw_data.h SCROLLBACK.md NATIVE-SEPARATORS.md st-scrollback-viewer.c $(SRC)\
 		st-$(VERSION)
 	tar -cf - st-$(VERSION) | gzip > st-$(VERSION).tar.gz
 	rm -rf st-$(VERSION)

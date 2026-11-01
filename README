@@ -23,6 +23,9 @@ vis 查看器需要同时安装本仓库的 st、st-scrollback-viewer 和配套 
 已有 config.h 的用户需要同步新增开关、launcher 和 Alt-q 绑定。
 架构、安装步骤和验收方法见 SCROLLBACK.md。
 
+vis 分屏可以直接调用 st 原生分割线绘制，无需拼接字符；需同时更新两个程序并新开 st。
+接口、回退行为与测试见 NATIVE-SEPARATORS.md。
+
 OpenBSD 可以使用系统 make 或 gmake 编译：
 
     make CC=cc
