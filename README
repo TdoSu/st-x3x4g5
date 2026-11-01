@@ -23,6 +23,14 @@ vis 查看器需要同时安装本仓库的 st、st-scrollback-viewer 和配套 
 已有 config.h 的用户需要同步新增开关、launcher 和 Alt-q 绑定。
 架构、安装步骤和验收方法见 SCROLLBACK.md。
 
+OpenBSD 可以使用系统 make 或 gmake 编译：
+
+    make CC=cc
+
+默认编译器为 cc，C99 语言模式通过 -std=c99 指定，不需要 c99 命令。
+Makefile 以多次 -f 加载 config.mk 和 build.mk，兼容 BSD make 与 GNU make。
+编译器与参数可以用 make CC=clang CFLAGS=-O2 等命令行设置覆盖。
+
 上面这些改动目前都在 develop 分支上.
 经过上面这些魔改之后, 要在这个代码上打补丁已经是非常困难的了.
 不过这个时代有 ai, 这个项目还算比较小...

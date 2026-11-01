@@ -67,6 +67,25 @@ make
 make install
 ```
 
+On OpenBSD, use the base `make` and `cc`; `gmake` is also supported. The portable
+entry points load configuration and build rules with repeated `-f` arguments,
+avoiding incompatible include directives. st explicitly selects `cc -std=c99`,
+so a separate `c99` program is not required. vis's configure script selects `cc`
+and records its options in `config.mk`:
+
+```
+# in vis
+./configure CC=cc --enable-lua
+make
+# in st-x3x4g5
+make CC=cc
+```
+
+Command-line compiler/flag overrides are forwarded to the actual build. See
+the [OpenBSD make manual](https://man.openbsd.org/make.1) for multiple-makefile
+loading and command-line variable precedence. GNU-only dependency bootstrap
+targets in vis's `GNUmakefile` remain available through gmake.
+
 Choose the same installation prefix (configure's `--prefix` for vis, `PREFIX`
 for st), and put its `bin` directory on PATH. st's install target installs the
 small launcher alongside st. `make st` also builds the launcher. If a bare
@@ -150,6 +169,13 @@ sh tests/split-state.sh
 sh tests/scrollback-x11.sh
 ```
 
+`python3 tests/build-make.py --make make` checks a fresh build with an unusable
+`c99` placed first on PATH, staged installation/uninstallation, compiler/flag
+overrides, and rebuilding the st source archive. Repeat with `--make bmake` or
+`--make gmake` to select a make implementation. vis provides the corresponding
+`python3 test/build-make.py` check, including clean/distclean without a generated
+configuration and installation of its Lua viewer files.
+
 The snapshot test also verifies automatic temporary-file creation/cleanup,
 launcher lookup beside st when PATH misses it, PATH precedence, and explicit
 launcher paths. The X11 script does not add the st checkout to PATH, exercising
@@ -196,5 +222,6 @@ Validated in the implementation environment: both repository builds, snapshot
 tests, existing wide-character/split-state tests, vis's PTY viewer tests, its core
 suite and 65 editing cases, the X11 scenarios above, and a separate build with
 `scrollbackvis = 0`. The sam suite was skipped because sam was unavailable.
-OpenBSD portability follows the existing build conventions but was not executed
-on an OpenBSD host.
+Both projects' build/install/clean paths were verified with GNU make and BSD
+bmake on Linux, including the missing-c99 regression. This checks make syntax
+and build behavior; native OpenBSD compilation was not executed on this host.
