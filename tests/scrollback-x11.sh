@@ -32,5 +32,6 @@ printf '  CURRENT-SCREEN 你好\n'
 printf 'unchanged\n' > "$2.state"
 KSH
 export VIS_PATH="$VIS_DIR/lua"
-export PATH="$taskdir/bin:$(pwd):$VIS_DIR:$PATH"
+# ./st must also find its sibling launcher when this checkout is not on PATH.
+export PATH="$taskdir/bin:$VIS_DIR:$PATH"
 "$taskdir/scrollback-x11" "$taskdir/scrollback-x11" "$taskdir/session.ksh" "$taskdir/snapshots"

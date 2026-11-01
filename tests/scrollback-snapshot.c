@@ -1,8 +1,12 @@
 #include <locale.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 #include <wchar.h>
 
 #include "st.h"
@@ -51,6 +55,90 @@ expect(const char *expected)
 	}
 }
 
+static void
+test_launcher(void)
+{
+	char directory[] = "/tmp/st-launcher-test.XXXXXXXX";
+	char helper[PATH_MAX], alternate[PATH_MAX], bindir[PATH_MAX], terminal[PATH_MAX];
+	char report[PATH_MAX], actual[PATH_MAX], snapshot[PATH_MAX], content[128];
+	char *oldpath = getenv("PATH"), *oldtmp = getenv("TMPDIR");
+	struct timespec delay = { .tv_nsec = 10000000 };
+	struct stat st;
+	FILE *file;
+	int i, scenario, ready;
+
+	oldpath = oldpath ? xstrdup(oldpath) : NULL;
+	oldtmp = oldtmp ? xstrdup(oldtmp) : NULL;
+	if (!mkdtemp(directory))
+		goto fail;
+	snprintf(helper, sizeof helper, "%s/st-launcher-fixture", directory);
+	snprintf(bindir, sizeof bindir, "%s/bin", directory);
+	snprintf(alternate, sizeof alternate, "%s/bin/st-launcher-fixture", directory);
+	snprintf(terminal, sizeof terminal, "%s/st", directory);
+	snprintf(report, sizeof report, "%s/report", directory);
+	if (mkdir(bindir, 0700) < 0)
+		goto fail;
+	for (i = 0; i < 2; i++) {
+		const char *path = i ? alternate : helper;
+		if (!(file = fopen(path, "w")))
+			goto fail;
+		fputs("#!/bin/sh\nIFS= read -r line <\"$1\" || exit 1\n"
+		      "printf '%s\\n%s\\n%s\\n' \"$0\" \"$1\" \"$line\" >\"$ST_LAUNCHER_TEST_REPORT\"\n", file);
+		if (fclose(file) != 0 || chmod(path, 0700) < 0)
+			goto fail;
+	}
+	if (setenv("TMPDIR", directory, 1) < 0 || setenv("ST_LAUNCHER_TEST_REPORT", report, 1) < 0)
+		goto fail;
+	tnew(24, 2);
+	feed("launcher-snapshot");
+	for (scenario = 0; scenario < 3; scenario++) {
+		/* Missing PATH entry, PATH precedence, then an explicit helper path. */
+		if (setenv("PATH", scenario == 1 ? bindir : "/nonexistent", 1) < 0 ||
+		    tscrollback(scenario == 2 ? helper : "st-launcher-fixture",
+		                "1", "24x2", "monospace", terminal) < 0)
+			goto fail;
+		ready = 0;
+		for (i = 0; i < 200 && !ready; i++) {
+			if ((file = fopen(report, "r"))) {
+				ready = fgets(actual, sizeof actual, file) &&
+				        fgets(snapshot, sizeof snapshot, file) &&
+				        fgets(content, sizeof content, file);
+				fclose(file);
+			}
+			if (!ready)
+				nanosleep(&delay, NULL);
+		}
+		if (!ready)
+			goto fail;
+		actual[strcspn(actual, "\n")] = '\0';
+		snapshot[strcspn(snapshot, "\n")] = '\0';
+		if (strcmp(actual, scenario == 1 ? alternate : helper) ||
+		    strncmp(content, "launcher-snapshot", strlen("launcher-snapshot")) ||
+		    stat(snapshot, &st) < 0 || (st.st_mode & 0777) != 0400)
+			goto fail;
+		for (i = 0; i < 200 && access(snapshot, F_OK) == 0; i++) {
+			ttyreap();
+			nanosleep(&delay, NULL);
+		}
+		if (access(snapshot, F_OK) == 0 || unlink(report) < 0)
+			goto fail;
+	}
+	if (oldpath) setenv("PATH", oldpath, 1); else unsetenv("PATH");
+	if (oldtmp) setenv("TMPDIR", oldtmp, 1); else unsetenv("TMPDIR");
+	unsetenv("ST_LAUNCHER_TEST_REPORT");
+	free(oldpath);
+	free(oldtmp);
+	unlink(helper);
+	unlink(alternate);
+	rmdir(bindir);
+	rmdir(directory);
+	puts("scrollback launcher: sibling fallback, PATH precedence, explicit path, snapshot creation/cleanup ok");
+	return;
+fail:
+	fprintf(stderr, "FAIL: scrollback launcher discovery or snapshot lifecycle\n");
+	exit(1);
+}
+
 int
 main(void)
 {
@@ -58,6 +146,7 @@ main(void)
 	int i;
 	if (!setlocale(LC_CTYPE, "") || wcwidth(0x4f60) != 2)
 		return 2;
+	test_launcher();
 	tnew(6, 2);
 	feed("ab你好Z");
 	expect("ab你好Z     \n");

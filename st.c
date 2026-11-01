@@ -1626,6 +1626,8 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 {
 	static int registered;
 	const char *tmp = getenv("TMPDIR");
+	const char *slash;
+	char sibling[PATH_MAX] = "";
 	int fd, life[2], n, saved;
 	long maxfd;
 	pid_t child;
@@ -1633,6 +1635,14 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 	/* ttyreap owns this PID; never confuse it with a pane's foreground shell. */
 	if (scrollbackpid)
 		return 0;
+	/* ./st and /path/to/st can run without their directory being on PATH.
+	 * Keep explicit launcher paths and successful PATH lookups authoritative. */
+	if (!strchr(launcher, '/') && (slash = strrchr(terminal, '/'))) {
+		n = snprintf(sibling, sizeof sibling, "%.*s/%s",
+		             (int)(slash - terminal), terminal, launcher);
+		if (n < 0 || n >= sizeof sibling)
+			sibling[0] = '\0';
+	}
 	if (!registered) {
 		if (atexit(scrollbackcleanup) != 0)
 			return -1;
@@ -1691,7 +1701,14 @@ tscrollback(const char *launcher, const char *window, const char *geometry,
 		signal(SIGHUP, SIG_DFL);
 		signal(SIGTERM, SIG_DFL);
 		execlp(launcher, launcher, scrollbackpath, window, geometry, font, terminal, (char *)NULL);
-		perror("st: scrollback launcher");
+		if (errno == ENOENT && sibling[0]) {
+			launcher = sibling;
+			execl(launcher, launcher, scrollbackpath, window, geometry, font, terminal, (char *)NULL);
+		}
+		saved = errno;
+		fprintf(stderr, "st: scrollback launcher %s: %s\n"
+		        "st: build with 'make st' and install st-scrollback-viewer beside st or on PATH\n",
+		        launcher, strerror(saved));
 		_exit(127);
 	}
 	saved = errno;

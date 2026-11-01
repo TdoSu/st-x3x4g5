@@ -21,7 +21,7 @@ boxdraw.o: config.h st.h boxdraw_data.h
 
 $(OBJ): config.h config.mk
 
-st: $(OBJ)
+st: $(OBJ) st-scrollback-viewer
 	$(CC) -o $@ $(OBJ) $(STLDFLAGS)
 
 st-scrollback-viewer: st-scrollback-viewer.c config.mk

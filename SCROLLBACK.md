@@ -58,11 +58,21 @@ make install
 
 Choose the same installation prefix (configure's `--prefix` for vis, `PREFIX`
 for st), and put its `bin` directory on PATH. st's install target installs the
-small launcher alongside st. Install `xclip` or `xsel` for X11 CLIPBOARD; the
+small launcher alongside st. `make st` also builds the launcher. If a bare
+launcher name is absent from PATH, st tries beside its own invocation path
+(for example, `./st-scrollback-viewer` when invoked as `./st`). Explicit launcher
+paths and existing PATH entries keep their usual precedence.
+Install `xclip` or `xsel` for X11 CLIPBOARD; the
 launcher selects X11 even when WAYLAND_DISPLAY is present. No shell configuration
 is needed. For an uninstalled checkout, prepend both checkout directories to
 PATH and set `VIS_PATH` to vis's absolute `lua` directory (needed on OpenBSD,
 where vis cannot discover it through `/proc/self/exe`).
+
+`st: scrollback launcher ...: No such file or directory` means the launcher
+executable is missing; the snapshot itself is automatically created by mkstemp.
+Build/install the launcher as above. The separate vis checkout must also be
+built, and its executable must precede an older system vis on PATH, since older
+versions do not recognize `--scrollback`.
 
 `scrollbackvis` in `config.def.h` is a global configuration variable:
 
@@ -106,6 +116,11 @@ sh tests/wide-overwrite.sh
 sh tests/split-state.sh
 sh tests/scrollback-x11.sh
 ```
+
+The snapshot test also verifies automatic temporary-file creation/cleanup,
+launcher lookup beside st when PATH misses it, PATH precedence, and explicit
+launcher paths. The X11 script does not add the st checkout to PATH, exercising
+the sibling lookup with the real viewer.
 
 The X11 test requires a working DISPLAY, ksh, a C compiler and X11 headers, and a
 built sibling vis checkout (override `VIS_DIR` if necessary). It runs two st
