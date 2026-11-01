@@ -29,7 +29,7 @@ relationship using X11. Window managers may override placement and focus. Exact
 same-window switching would require substantially changing terminal ownership;
 V1 deliberately uses a separate window and does not touch the original PTY.
 
-## Planned commits
+## Commit boundaries
 
 - Record architecture and rollback boundaries.
 - Export and test terminal snapshots without enabling the new shortcut.
@@ -38,3 +38,90 @@ V1 deliberately uses a separate window and does not touch the original PTY.
 
 Each repository is committed independently. The final integration requires both
 updated executables and vis's installed Lua support files.
+
+## Build and use
+
+In the companion vis checkout:
+
+```
+./configure --enable-lua
+make
+make install
+```
+
+Then in this checkout:
+
+```
+make
+make install
+```
+
+Choose the same installation prefix (configure's `--prefix` for vis, `PREFIX`
+for st), and put its `bin` directory on PATH. st's install target installs the
+small launcher alongside st. Install `xclip` or `xsel` for X11 CLIPBOARD; the
+launcher selects X11 even when WAYLAND_DISPLAY is present. No shell configuration
+is needed. For an uninstalled checkout, prepend both checkout directories to
+PATH and set `VIS_PATH` to vis's absolute `lua` directory (needed on OpenBSD,
+where vis cannot discover it through `/proc/self/exe`).
+
+`scrollbackvis` in `config.def.h` is a global configuration variable:
+
+- `1` (default): Alt-q opens vis. `gg`/`G`, `/`/`?`, `n`/`N`, page motions,
+  `v`/`V`, and the usual yank motions are available. `y` and `yy` copy to X11
+  CLIPBOARD; `:q` or `:q!` closes the viewer.
+- `0`: Alt-q enters the original built-in vi copy mode with its old bindings.
+
+If `config.h` already exists, synchronize the new configuration variables and
+Alt-q binding there, or regenerate it after preserving local customizations.
+There is only one Alt-q binding. Scrollback itself remains enabled in both modes;
+the switch selects the browsing interface. The temporary viewer ignores Alt-q
+to prevent recursive activation.
+
+The snapshot contains all terminal-cell spaces (including trailing blanks and
+blank rows), UTF-8 glyphs once each, and newlines at hard line boundaries. Soft
+wrap markers join physical rows, including history-to-main-screen boundaries.
+History and an active alternate screen have a hard boundary. Terminal control
+sequences and text already discarded from the bounded ring cannot be recovered.
+
+The snapshot is created with mkstemp, becomes mode 0400 after writing, and is
+removed on normal exit, cancellation and startup failure. The launcher's lifetime
+pipe closes when the original st exits; it terminates the viewer. st also reaps
+the launcher and terminates its separate process group if the launcher crashes.
+Clipboard providers intentionally retain selection ownership after vis exits,
+until another application replaces the selection.
+
+Window placement, transient hints and focus use standard X11/EWMH requests.
+The viewer requests the original dimensions and font. Negative desktop positions
+are clamped to zero because st's geometry syntax interprets minus as an offset
+from the far screen edge. A window manager can override placement/focus; there
+is no dwm dependency. V1 is a separate window with a static snapshot.
+
+## Verification
+
+From this checkout:
+
+```
+sh tests/scrollback-snapshot.sh
+sh tests/wide-overwrite.sh
+sh tests/split-state.sh
+sh tests/scrollback-x11.sh
+```
+
+The X11 test requires a working DISPLAY, ksh, Python-free C build tools, and a
+built sibling vis checkout (override `VIS_DIR` if necessary). It runs two st
+instances, one with an alternate-screen foreground program, and checks history,
+current content, search/Visual copying, paste from another visible X11 client
+after `:q`, duplicate suppression, focus, unchanged shell PID/cwd/environment,
+unchanged foreground input, repeated activation, restrictive permissions, and
+cleanup on failure/cancellation/launcher crash/original exit. Its test-only
+xclip replacement serves actual X11 selections and avoids requiring an installed
+clipboard provider just to run the test.
+
+From the vis checkout, `python3 test/scrollback.py` checks the native PTY input
+path, dedicated configuration, navigation/search/yanking, rejected editing,
+rejected save/shell commands, and an unchanged snapshot after `:q`.
+
+For manual acceptance, launch st with ksh, produce more than one screen of output,
+press Alt-q, search for old output, select text with `v` and yank with `y`, then
+`:q` and paste into another X11 application. Repeat with a full-screen program.
+Use `scrollbackvis = 0` and rebuild to verify the original copy interface.

@@ -15,6 +15,7 @@
 #include <time.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #ifdef __OpenBSD__
@@ -321,6 +322,10 @@ static int splittoprows;
 static int splitrunoscpane = -1;
 static time_t splitrunoscdeadline;
 static int iofd = 1;
+static pid_t scrollbackpid;
+static pid_t scrollbackowner;
+static int scrollbacklife = -1;
+static char scrollbackpath[PATH_MAX];
 static char *splitshell;
 int disableda = 0;
 
@@ -1597,6 +1602,111 @@ sigchld(int a)
 	(void)a;
 }
 
+static void
+scrollbackcleanup(void)
+{
+	if (scrollbackowner != getpid())
+		return;
+	/* The launcher starts a new session. If it crashes, terminate its viewer
+	 * terminal as well; that terminal hangs up only its own vis child. */
+	if (scrollbackpid > 0)
+		kill(-scrollbackpid, SIGTERM);
+	if (scrollbacklife >= 0)
+		close(scrollbacklife);
+	scrollbacklife = -1;
+	if (scrollbackpath[0])
+		unlink(scrollbackpath);
+	scrollbackpath[0] = '\0';
+	scrollbackpid = 0;
+}
+
+int
+tscrollback(const char *launcher, const char *window, const char *geometry,
+           const char *font, const char *terminal)
+{
+	static int registered;
+	const char *tmp = getenv("TMPDIR");
+	int fd, life[2], n, saved;
+	long maxfd;
+	pid_t child;
+
+	/* ttyreap owns this PID; never confuse it with a pane's foreground shell. */
+	if (scrollbackpid)
+		return 0;
+	if (!registered) {
+		if (atexit(scrollbackcleanup) != 0)
+			return -1;
+		scrollbackowner = getpid();
+		registered = 1;
+	}
+	if (!tmp || tmp[0] != '/')
+		tmp = "/tmp";
+	n = snprintf(scrollbackpath, sizeof scrollbackpath, "%s/st-scrollback.XXXXXXXX", tmp);
+	if (n < 0 || n >= sizeof scrollbackpath) {
+		scrollbackpath[0] = '\0';
+		errno = ENAMETOOLONG;
+		return -1;
+	}
+	if ((fd = mkstemp(scrollbackpath)) < 0) {
+		scrollbackpath[0] = '\0';
+		return -1;
+	}
+	if (tsnapshot(fd) < 0 || fchmod(fd, S_IRUSR) < 0) {
+		saved = errno;
+		close(fd);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	if (close(fd) < 0 || pipe(life) < 0) {
+		saved = errno;
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	if (fcntl(life[1], F_SETFD, FD_CLOEXEC) < 0) {
+		saved = errno;
+		close(life[0]);
+		close(life[1]);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	maxfd = sysconf(_SC_OPEN_MAX);
+	if (maxfd < 0) {
+		saved = errno;
+		close(life[0]);
+		close(life[1]);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	if ((child = fork()) == 0) {
+		/* A new process/session, never the original PTY or its controlling tty. */
+		if (setsid() < 0 || dup2(life[0], STDIN_FILENO) < 0)
+			_exit(1);
+		for (fd = 3; fd < maxfd; fd++)
+			close(fd);
+		signal(SIGCHLD, SIG_DFL);
+		signal(SIGHUP, SIG_DFL);
+		signal(SIGTERM, SIG_DFL);
+		execlp(launcher, launcher, scrollbackpath, window, geometry, font, terminal, (char *)NULL);
+		perror("st: scrollback launcher");
+		_exit(127);
+	}
+	saved = errno;
+	close(life[0]);
+	if (child < 0) {
+		close(life[1]);
+		scrollbackcleanup();
+		errno = saved;
+		return -1;
+	}
+	scrollbacklife = life[1];
+	scrollbackpid = child;
+	return 0;
+}
+
 void
 ttyreap(void)
 {
@@ -1614,6 +1724,10 @@ ttyreap(void)
 			continue;
 		if (p <= 0)
 			break;
+		if (p == scrollbackpid) {
+			scrollbackcleanup();
+			continue;
+		}
 		for (i = 0; i < LEN(panes); i++)
 			if (panes[i].child == p)
 				break;

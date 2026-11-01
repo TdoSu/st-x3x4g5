@@ -7,12 +7,19 @@
   为了简单, 有且只有一个水平分屏.
 2. 有一个简易的光标拖尾动画效果, 可惜只是在两个光标位置之间做了插值,
   所以没有 kitty 效果那么好.
-3. 包含一个 vi copy 的状态, Alt + q 可以进入这个效果,
+3. Alt + q 默认用 vis 只读查看当前分屏的滚动历史和屏幕快照，
+  用 vis 的移动、搜索和 Visual 选择，y 复制到 X11 CLIPBOARD，:q 返回。
+  config.def.h 中的全局变量 scrollbackvis 设为 0 后恢复原 vi copy 状态，
   然后可以用有限的几个 vi 快捷键:
   用 v 选中文本,
   用 j k { } 滚动屏幕, (抱歉没有其他滚动的快捷键了).
 4. 我还做了一些视觉上的优化, 比如终端绘制水平和垂直分割线,
   避免在设置了文字之间的间距后, 分割线出现断裂.
+
+vis 查看器需要同时安装本仓库的 st、st-scrollback-viewer 和配套 vis
+（启用 Lua，并安装 vis-scrollback.lua、vis-clipboard），以及 xclip 或 xsel。
+已有 config.h 的用户需要同步新增开关、launcher 和 Alt-q 绑定。
+架构、安装步骤和验收方法见 SCROLLBACK.md。
 
 上面这些改动目前都在 develop 分支上.
 经过上面这些魔改之后, 要在这个代码上打补丁已经是非常困难的了.

@@ -28,6 +28,9 @@ static int borderpx_down = 0;
  * 5: value of shell in config.h
  */
 static char *shell = "/bin/sh";
+/* Alt-q: 1 = isolated vis scrollback viewer; 0 = original vi copy mode. */
+int scrollbackvis = 1;
+static char *scrollbacklauncher = "st-scrollback-viewer";
 char *utmp = NULL;
 /* scroll program: to enable use a string like "scroll" */
 char *scroll = NULL;
@@ -285,7 +288,7 @@ static Shortcut shortcuts[] = {
     {ControlMask, XK_Print, toggleprinter, {.i = 0}},
     {ShiftMask, XK_Print, printscreen, {.i = 0}},
     {XK_ANY_MOD, XK_Print, printsel, {.i = 0}},
-    {MODKEY, XK_q, copymode_toggle, {.i = 0}},
+    {MODKEY, XK_q, scrollbacktoggle, {.i = 0}},
     {MODKEY, XK_Return, splittoggle, {.i = 0}},
     {MODKEY, XK_k, splitfocus, {.i = 0}},
     {MODKEY, XK_j, splitfocus, {.i = 1}},

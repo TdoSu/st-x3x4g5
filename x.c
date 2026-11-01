@@ -61,6 +61,7 @@ static void zoom(const Arg *);
 static void zoomabs(const Arg *);
 static void zoomreset(const Arg *);
 static void ttysend(const Arg *);
+static void scrollbacktoggle(const Arg *);
 
 /* config.h for applying patches and the configuration. */
 #include "config.h"
@@ -312,6 +313,48 @@ static int frccap = 0;
 static char *usedfont = NULL;
 static double usedfontsize = 0;
 static double defaultfontsize = 0;
+static volatile sig_atomic_t viewerstop;
+
+static void
+viewerterminate(int signo)
+{
+	(void)signo;
+	viewerstop = 1;
+}
+
+static void
+scrollbacktoggle(const Arg *arg)
+{
+	Window child;
+	int x, y;
+	char window[32], geometry[128];
+	FcChar8 *viewerfont;
+
+	/* Do not recursively open a viewer from its own temporary terminal. */
+	if (getenv("ST_SCROLLBACK_PARENT"))
+		return;
+	if (!scrollbackvis) {
+		copymode_toggle(arg);
+		return;
+	}
+	if (!XTranslateCoordinates(xw.dpy, xw.win, DefaultRootWindow(xw.dpy),
+	                           0, 0, &x, &y, &child))
+		return;
+	snprintf(window, sizeof window, "%lu", xw.win);
+	/* Full window dimensions even when the snapshot comes from a split pane.
+	 * X geometry treats negative coordinates as offsets from the far edge. */
+	snprintf(geometry, sizeof geometry, "%dx%d+%d+%d",
+	         (win.w - borderpx_left - borderpx_right) / win.cw,
+	         (win.h - borderpx_top - borderpx_down) / win.ch, MAX(x, 0), MAX(y, 0));
+	viewerfont = FcNameUnparse(dc.font.pattern);
+	if (tscrollback(scrollbacklauncher, window, geometry,
+	                viewerfont ? (char *)viewerfont : usedfont, argv0) < 0) {
+		perror("st: scrollback viewer");
+		xbell();
+	}
+	if (viewerfont)
+		FcStrFree(viewerfont);
+}
 
 static char *opt_class = NULL;
 static char **opt_cmd  = NULL;
@@ -1452,6 +1495,13 @@ xinit(int cols, int rows)
 			win.w, win.h, 0, xw.depth, InputOutput,
 			xw.vis, CWBackPixel | CWBorderPixel | CWBitGravity
 			| CWEventMask | CWColormap, &xw.attrs);
+	if (getenv("ST_SCROLLBACK_PARENT")) {
+		Window original = strtoul(getenv("ST_SCROLLBACK_PARENT"), NULL, 0);
+		if (original)
+			XSetTransientForHint(xw.dpy, xw.win, original);
+		signal(SIGTERM, viewerterminate);
+		signal(SIGHUP, viewerterminate);
+	}
 	if (parent != root)
 		XReparentWindow(xw.dpy, xw.win, parent, xw.l, xw.t);
 
@@ -2909,7 +2959,7 @@ kpress(XEvent *ev)
 	}
 	/* 1. split shortcuts still work while copy mode is active */
 	for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
-		if ((bp->func == splitadjust || bp->func == splitfocus ||
+		if ((bp->func == scrollbacktoggle || bp->func == splitadjust || bp->func == splitfocus ||
 		    bp->func == splitrunselection || bp->func == splittoggle) &&
 		    ksym == bp->keysym && match(bp->mod, e->state)) {
 			bp->func(&(bp->arg));
@@ -3027,8 +3077,17 @@ run(void)
 
 	ttynew(opt_line, shell, opt_io, opt_cmd);
 	cresize(w, h);
+	if (getenv("ST_SCROLLBACK_PARENT")) {
+		XRaiseWindow(xw.dpy, xw.win);
+		XSetInputFocus(xw.dpy, xw.win, RevertToPointerRoot, CurrentTime);
+		XFlush(xw.dpy);
+	}
 
 	for (timeout = -1, drawing = 0, lastblink = (struct timespec){0};;) {
+		if (viewerstop) {
+			ttyhangup();
+			exit(0);
+		}
 		ttyreap();
 		xsetpanemode(splitfocused());
 		FD_ZERO(&rfd);
