@@ -22,7 +22,7 @@ LIBS = -L$(X11LIB) -lm -lrt -lX11 -lutil -lXft \
 
 # flags
 STCPPFLAGS = -DVERSION=\"$(VERSION)\" -D_XOPEN_SOURCE=600
-STCFLAGS = $(INCS) $(STCPPFLAGS) $(CPPFLAGS) $(CFLAGS)
+STCFLAGS = $(INCS) $(STCPPFLAGS) -std=c99 $(CPPFLAGS) $(CFLAGS)
 STLDFLAGS = $(LIBS) $(LDFLAGS)
 
 # OpenBSD:
@@ -33,4 +33,5 @@ LIBS = -L$(X11LIB) -lm -lX11 -lutil -lXft \
 MANPREFIX = ${PREFIX}/man
 
 # compiler and linker
-# CC = c99
+# Select the C99 language mode in STCFLAGS, not a separate c99 executable.
+CC = cc
